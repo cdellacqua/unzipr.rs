@@ -1,22 +1,20 @@
 use std::{
-	collections::VecDeque,
 	ffi::OsStr,
 	fs::{self, File, ReadDir},
 	io::{self, BufReader},
 	path::{Path, PathBuf},
-	sync::{Arc, Condvar, Mutex},
-	thread,
 };
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use itertools::Itertools;
+use threadpool::ThreadPool;
 use zip::ZipArchive;
 
-fn process_dir<Queue: FnMut(PathBuf)>(
+fn process_dir<Queue: Fn(PathBuf)>(
 	dir: ReadDir,
 	exploration_pb: &ProgressBar,
 	_extraction_pb: &ProgressBar,
-	queue_extraction: &mut Queue,
+	queue_extraction: &Queue,
 ) {
 	let entries = dir.into_iter().filter_map(|entry| entry.ok()).collect_vec();
 	exploration_pb.inc_length(entries.len() as u64);
@@ -37,14 +35,15 @@ fn process_dir<Queue: FnMut(PathBuf)>(
 	}
 }
 
-fn extract(path: PathBuf) {
-	let file = File::open(path).expect("open file");
+fn extract(zip_path: PathBuf) {
+	let file = File::open(&zip_path).expect("open file");
 	let reader = BufReader::new(file);
 	let mut zip = ZipArchive::new(reader).expect("open zip file");
+
 	for i in 0..zip.len() {
 		let mut file = zip.by_index(i).expect("zipped file");
 		let outpath = match file.enclosed_name() {
-			Some(path) => PathBuf::from_iter([path.parent().unwrap(), &path]),
+			Some(enclosed_path) => PathBuf::from_iter([zip_path.parent().unwrap(), &enclosed_path]),
 			None => continue,
 		};
 
@@ -87,61 +86,20 @@ fn main() {
 			.unwrap(),
 	);
 
-	// let cores = num_cpus::get();
-	let cores = 1;
-
-	let queue = Some(VecDeque::<PathBuf>::with_capacity(cores));
-	let condvar_pair = Arc::new((Mutex::new(queue), Condvar::new()));
-
-	let mut workers = Vec::with_capacity(cores);
-	for _ in 0..cores {
-		let condvar_pair = condvar_pair.clone();
-		workers.push(thread::spawn(move || loop {
-			let (queue_lock, condvar) = &*condvar_pair;
-			let mut guard = queue_lock.lock().unwrap();
-			while guard.as_ref().is_some_and(|x| x.len() == 0) {
-				guard = condvar.wait(guard).unwrap();
-			}
-			if let Some(queue) = guard.as_mut() {
-				let path = queue.pop_front().unwrap();
-				extract(path);
-				condvar.notify_all();
-			} else {
-				break;
-			}
-			drop(guard);
-		}));
-	}
-
 	let args = std::env::args().collect_vec();
 	let dir = Path::new(&args[1]);
 	let dir = fs::read_dir(dir).expect("read folder");
 
-	{
-		let condvar_pair = condvar_pair.clone();
-		let (queue_lock, condvar) = &*condvar_pair;
-		process_dir(dir, &exploration_pb, &extraction_pb, &mut move |path| {
-			let mut guard = queue_lock.lock().unwrap();
-			while guard.as_ref().is_some_and(|x| x.len() >= cores) {
-				guard = condvar.wait(guard).unwrap();
-			}
-			if let Some(queue) = guard.as_mut() {
-				queue.push_back(path);
-				condvar.notify_one();
-			}
-		});
-	}
-	let (queue_lock, condvar) = &*condvar_pair;
-	let mut guard = queue_lock.lock().unwrap();
-	while guard.as_ref().is_some_and(|x| x.len() > 0) {
-		guard = condvar.wait(guard).unwrap();
-	}
-	guard.as_mut().take();
-	condvar.notify_all();
-	drop(guard);
-	for w in workers {
-		w.join().unwrap();
-	}
+	// let cores = num_cpus::get();
+	let cores = 1;
+
+	let thread_pool = ThreadPool::new(cores);
+
+	process_dir(dir, &exploration_pb, &extraction_pb, &|path| {
+		thread_pool.execute(|| extract(path));
+	});
+
+	thread_pool.join();
 
 	multi_pb.clear().unwrap();
 }
