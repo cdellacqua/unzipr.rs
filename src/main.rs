@@ -2,12 +2,12 @@ use std::{
 	ffi::OsStr,
 	fs::{self, File, ReadDir},
 	io::{self, BufReader},
-	path::{Path, PathBuf},
+	path::{Path, PathBuf}, thread::spawn,
 };
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use itertools::Itertools;
-use threadpool::ThreadPool;
+use rayon::{ThreadPool, ThreadPoolBuilder};
 use zip::ZipArchive;
 
 fn process_dir<Queue: Fn(PathBuf)>(
@@ -93,13 +93,13 @@ fn main() {
 	// let cores = num_cpus::get();
 	let cores = 1;
 
-	let thread_pool = ThreadPool::new(cores);
+	let thread_pool = ThreadPoolBuilder::new().num_threads(cores).build().expect("thread pool");
 
 	process_dir(dir, &exploration_pb, &extraction_pb, &|path| {
-		thread_pool.execute(|| extract(path));
+		thread_pool.install(|| extract(path));
 	});
 
-	thread_pool.join();
+	drop(thread_pool);
 
 	multi_pb.clear().unwrap();
 }
