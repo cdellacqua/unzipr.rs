@@ -1,3 +1,4 @@
+use byte_unit::Byte;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use std::{
@@ -5,18 +6,16 @@ use std::{
 	fs::{self, File, ReadDir},
 	io::{BufReader, Read, Write},
 	path::{Path, PathBuf},
+	process::exit,
 	str::FromStr,
 	time::Duration,
 };
-use tracing::{debug, error, info, warn, Level};
-use unzipr::{
-	byte_unit::KiBToBytes, indicatif_ext::IndicatifWriter, rust_ext::ResultExt,
-	thread_pool::ThreadPool,
-};
+use tracing::{debug, error, warn, Level};
+use unzipr::{indicatif_ext::IndicatifWriter, rust_ext::ResultExt, thread_pool::ThreadPool};
 use zip::ZipArchive;
 
 fn process_dir<Queue: FnMut(PathBuf)>(
-	opts: &Cli,
+	opts: &CliArgs,
 	dir: ReadDir,
 	exploration_pb: &ProgressBar,
 	queue_extraction: &mut Queue,
@@ -27,9 +26,9 @@ fn process_dir<Queue: FnMut(PathBuf)>(
 		let entry_path = entry.path();
 		exploration_pb.inc(1);
 		if entry_path.is_dir() {
-			let Ok(nested) = fs::read_dir(&entry_path) else {
-				let entry_path = entry_path;
-				error!("unable to read folder @ {entry_path:?}");
+			let Ok(nested) = fs::read_dir(&entry_path).inspect_err(|err| {
+				error!(?err, "unable to read directory {entry_path:?}");
+			}) else {
 				return;
 			};
 			exploration_pb.set_message(format!("exploring nested dir {entry_path:?}"));
@@ -42,17 +41,19 @@ fn process_dir<Queue: FnMut(PathBuf)>(
 	}
 }
 
-fn extract(opts: &Cli, zip_path: PathBuf, extraction_pb: &ProgressBar) {
-	let mut buf = vec![0u8; 10i32.KiB()];
+fn extract(opts: &CliArgs, zip_path: PathBuf, extraction_pb: &ProgressBar) {
+	let mut buf = vec![0u8; opts.block_size.as_u64() as usize];
 
-	let Ok(file) = File::open(&zip_path) else {
-		error!("unable to read file @ {zip_path:?}");
+	let Ok(file) = File::open(&zip_path).inspect_err(|err| {
+		error!(?err, "unable to read file {zip_path:?}");
+	}) else {
 		return;
 	};
 
 	let reader = BufReader::new(file);
-	let Ok(mut zip) = ZipArchive::new(reader) else {
-		error!("unable to open zip archive {zip_path:?}");
+	let Ok(mut zip) = ZipArchive::new(reader).inspect_err(|err| {
+		error!(?err, "unable to open zip archive {zip_path:?}");
+	}) else {
 		return;
 	};
 
@@ -60,8 +61,12 @@ fn extract(opts: &Cli, zip_path: PathBuf, extraction_pb: &ProgressBar) {
 		PathBuf::from_iter(zip_path.components().skip(opts.path.components().count()));
 
 	for i in 0..zip.len() {
-		let Ok(mut file) = zip.by_index(i) else {
-			error!("unable to read file with index {i} in zip archive {zip_path:?}",);
+		let Ok(mut file) = zip.by_index(i).inspect_err(|err| {
+			error!(
+				?err,
+				"unable to read file with index {i} in zip archive {zip_path:?}",
+			);
+		}) else {
 			continue;
 		};
 
@@ -96,8 +101,11 @@ fn extract(opts: &Cli, zip_path: PathBuf, extraction_pb: &ProgressBar) {
 		extraction_pb.set_message(file_name);
 
 		if file.is_dir() {
-			fs::create_dir_all(&output_path).if_err(|_| {
-				error!("unable to create empty dir {output_path:?}, archive {zip_path:?}",);
+			fs::create_dir_all(&output_path).if_err(|err| {
+				error!(
+					?err,
+					"unable to create empty dir {output_path:?}, archive {zip_path:?}",
+				);
 			});
 		} else {
 			if output_path.exists() && !opts.overwrite {
@@ -113,28 +121,36 @@ fn extract(opts: &Cli, zip_path: PathBuf, extraction_pb: &ProgressBar) {
 				}
 			}
 
-			let Ok(mut output_file) = File::create(&output_path) else {
-				error!("unable to create file {output_path:?}, archive {zip_path:?}",);
+			let Ok(mut output_file) = File::create(&output_path).inspect_err(|err| {
+				error!(
+					?err,
+					"unable to create file {output_path:?}, archive {zip_path:?}",
+				);
+			}) else {
 				continue;
 			};
 
 			extraction_pb.set_length(file.size());
 			loop {
-				let Ok(n) = file.read(&mut *buf) else {
-					error!("unable to read zipped file {enclosed_name:?}, archive {zip_path:?}",);
+				let Ok(n) = file.read(&mut *buf).inspect_err(|err| {
+					error!(
+						?err,
+						"unable to read zipped file {enclosed_name:?}, archive {zip_path:?}",
+					);
+				}) else {
 					break;
 				};
 				if n == 0 {
 					break;
 				}
 				extraction_pb.inc(n as u64);
-				let write_res = output_file.write(&*buf);
-				if let Err(err) = write_res {
+				output_file.write(&*buf).if_err(|err| {
 					error!(
 						?err,
 						"unable to extract zipped file {enclosed_name:?}, archive {zip_path:?}",
 					);
-				}
+					exit(1);
+				});
 			}
 		}
 	}
@@ -143,21 +159,42 @@ fn extract(opts: &Cli, zip_path: PathBuf, extraction_pb: &ProgressBar) {
 use clap::Parser;
 
 #[derive(Parser, Clone, Debug)]
-#[command(version = "1.0.0", about = "TODO", long_about = None)]
+#[command(version = "1.0.0", about = "unzipr - recursively extract every zip file found in a directory and its subdirectories", long_about = None)]
 #[command(next_line_help = true)]
-struct Cli {
+struct CliArgs {
 	path: PathBuf,
-	#[arg(short = 'f', long)]
+	#[arg(
+		short = 'f',
+		long,
+		help = "overwrite existing files with the same name as the ones in the archive while extracting"
+	)]
 	overwrite: bool,
-	#[arg(short = 'o', long)]
+	#[arg(
+		short = 'o',
+		long,
+		help = "change the output directory. By default, the input path is used"
+	)]
 	outdir: Option<PathBuf>,
-	#[arg(short = 'u', long)]
+	#[arg(
+		short = 'u',
+		long,
+		help = "put the content of the archive in the same directory as the zip archive it came from, rather than in a directory with the name of the source archive"
+	)]
 	unwrap: bool,
-	#[arg(short = 'v', long, action = clap::ArgAction::Count)]
+	#[arg(short = 'v', long, action = clap::ArgAction::Count, help = "select the log level by passing this flag multiple times. The min log level is 0 (no flag), max is 3 (-vvv)")]
 	verbose: u8,
+	#[arg(
+		short = 'b',
+		long = "block",
+		help = "block size for the copy operation. The unit can be omitted (implies bytes) or any of the usual MB/MiB/KB/KiB",
+		default_value = "1MiB"
+	)]
+	block_size: Byte,
 }
 
 fn main() {
+	let opts = CliArgs::parse();
+
 	let multi_pb = MultiProgress::new();
 	let exploration_pb = multi_pb.add(ProgressBar::empty());
 	exploration_pb.enable_steady_tick(Duration::from_millis(100));
@@ -169,7 +206,6 @@ fn main() {
 		.progress_chars("=>-"),
 	);
 
-	let opts = Cli::parse();
 	tracing_subscriber::fmt()
 		.without_time()
 		.with_target(false)
@@ -188,8 +224,9 @@ fn main() {
 	// let cores = 1;
 
 	let dir = Path::new(&opts.path);
-	let Ok(dir) = fs::read_dir(dir) else {
-		error!("dir {:?} doesn't exist", dir);
+	let Ok(dir) = fs::read_dir(dir).inspect_err(|err| {
+		error!(?err, "unable to scan dir {:?}", dir);
+	}) else {
 		return;
 	};
 
