@@ -29,7 +29,7 @@ fn process_dir<Queue: FnMut(PathBuf)>(
 		if entry_path.is_dir() {
 			let Ok(nested) = fs::read_dir(&entry_path) else {
 				let entry_path = entry_path;
-				warn!("unable to read folder @ {entry_path:?}");
+				error!("unable to read folder @ {entry_path:?}");
 				return;
 			};
 			exploration_pb.set_message(format!("exploring nested dir {entry_path:?}"));
@@ -46,13 +46,13 @@ fn extract(opts: &Cli, zip_path: PathBuf, extraction_pb: &ProgressBar) {
 	let mut buf = vec![0u8; 10i32.KiB()];
 
 	let Ok(file) = File::open(&zip_path) else {
-		warn!("unable to read file @ {zip_path:?}");
+		error!("unable to read file @ {zip_path:?}");
 		return;
 	};
 
 	let reader = BufReader::new(file);
 	let Ok(mut zip) = ZipArchive::new(reader) else {
-		warn!("unable to open zip archive {zip_path:?}");
+		error!("unable to open zip archive {zip_path:?}");
 		return;
 	};
 
@@ -61,26 +61,28 @@ fn extract(opts: &Cli, zip_path: PathBuf, extraction_pb: &ProgressBar) {
 
 	for i in 0..zip.len() {
 		let Ok(mut file) = zip.by_index(i) else {
-			warn!("unable to read file with index {i} in zip archive {zip_path:?}",);
+			error!("unable to read file with index {i} in zip archive {zip_path:?}",);
 			continue;
 		};
 
-		let output_path = match file.enclosed_name() {
-			Some(path) => PathBuf::from_iter([
-				opts.outdir.as_ref().unwrap_or_else(|| &opts.path),
-				&*zip_path_relative_to_initial
-					.parent()
-					.expect("a valid zip path should always have a parent dir"),
-				&*PathBuf::from_str(if opts.unwrap {
-					""
-				} else {
-					zip_path.file_stem().unwrap().to_str().unwrap()
-				})
-				.unwrap(),
-				&path,
-			]),
-			None => continue,
+		let Some(enclosed_name) = file.enclosed_name() else {
+			let mangled_name = file.mangled_name();
+			error!("unable to read a proper enclosed path for file {mangled_name:?}, archive {zip_path:?}");
+			continue;
 		};
+		let output_path = PathBuf::from_iter([
+			opts.outdir.as_ref().unwrap_or_else(|| &opts.path),
+			&*zip_path_relative_to_initial
+				.parent()
+				.expect("a valid zip path should always have a parent dir"),
+			&*PathBuf::from_str(if opts.unwrap {
+				""
+			} else {
+				zip_path.file_stem().unwrap().to_str().unwrap()
+			})
+			.unwrap(),
+			&enclosed_name,
+		]);
 
 		extraction_pb.reset();
 
@@ -95,34 +97,44 @@ fn extract(opts: &Cli, zip_path: PathBuf, extraction_pb: &ProgressBar) {
 
 		if file.is_dir() {
 			fs::create_dir_all(&output_path).if_err(|_| {
-				warn!("unable to create empty dir {output_path:?}, archive {zip_path:?}",);
+				error!("unable to create empty dir {output_path:?}, archive {zip_path:?}",);
 			});
 		} else {
 			if output_path.exists() && !opts.overwrite {
-				info!("file {output_path:?}, archive {zip_path:?} already exists, skipping...");
+				warn!("file {output_path:?}, archive {zip_path:?} already exists, skipping...");
 				continue;
 			}
 
 			if let Some(p) = output_path.parent() {
 				if !p.exists() {
 					fs::create_dir_all(p).if_err(|_| {
-						warn!("unable to create dir {p:?}, archive {zip_path:?}");
+						error!("unable to create dir {p:?}, archive {zip_path:?}");
 					});
 				}
 			}
 
 			let Ok(mut output_file) = File::create(&output_path) else {
-				warn!("unable to create file {output_path:?}, archive {zip_path:?}",);
+				error!("unable to create file {output_path:?}, archive {zip_path:?}",);
 				continue;
 			};
 
 			extraction_pb.set_length(file.size());
-			while let Ok(n) = file.read(&mut *buf) {
+			loop {
+				let Ok(n) = file.read(&mut *buf) else {
+					error!("unable to read zipped file {enclosed_name:?}, archive {zip_path:?}",);
+					break;
+				};
 				if n == 0 {
 					break;
 				}
 				extraction_pb.inc(n as u64);
-				output_file.write(&*buf).unwrap();
+				let write_res = output_file.write(&*buf);
+				if let Err(err) = write_res {
+					error!(
+						?err,
+						"unable to extract zipped file {enclosed_name:?}, archive {zip_path:?}",
+					);
+				}
 			}
 		}
 	}
@@ -195,7 +207,6 @@ fn main() {
 					.unwrap()
 					.progress_chars("=>-")
 			));
-			// pb.reset();
 			pb.set_message("idle");
 			pb
 	}).collect_vec();
@@ -211,6 +222,7 @@ fn main() {
 		pool.send_blocking(|(opts, extraction_pb)| {
 			extract(&opts, path, extraction_pb);
 			extraction_pb.reset();
+			extraction_pb.unset_length();
 			extraction_pb.set_message("idle");
 		});
 	});
