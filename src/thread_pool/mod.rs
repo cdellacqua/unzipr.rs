@@ -1,18 +1,47 @@
-use std::{collections::VecDeque, sync::{Arc, Condvar, Mutex}, thread::{self, JoinHandle}};
+use std::{
+	fmt::Debug,
+	mem::{self, replace},
+	sync::{Arc, Condvar, Mutex},
+	thread::{self, JoinHandle},
+};
 
 use itertools::Itertools;
 use tracing::debug;
 
 pub struct ThreadPool<WorkerCtx: Send + 'static = ()> {
 	inner: Arc<ThreadPoolShared<WorkerCtx>>,
-	num_threads: usize,
 	workers: Vec<JoinHandle<()>>,
+}
+
+enum PoolQueueSlot<WorkerCtx: Send + 'static> {
+	Done,
+	Empty,
+	Todo(Box<dyn FnOnce(&mut WorkerCtx) + Send>),
+}
+impl<WorkerCtx: Send + 'static> Debug for PoolQueueSlot<WorkerCtx> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::Done => write!(f, "Done"),
+			Self::Empty => write!(f, "Empty"),
+			Self::Todo(_) => write!(f, "Todo"),
+		}
+	}
+}
+
+impl<WorkerCtx: Send + 'static> PoolQueueSlot<WorkerCtx> {
+	fn take(&mut self) -> PoolQueueSlot<WorkerCtx> {
+		match self {
+			PoolQueueSlot::Todo(_) => replace(self, PoolQueueSlot::Empty),
+			PoolQueueSlot::Done => PoolQueueSlot::Done,
+			PoolQueueSlot::Empty => PoolQueueSlot::Empty,
+		}
+	}
 }
 
 pub struct ThreadPoolShared<WorkerCtx: Send + 'static> {
 	workers_condvar: Condvar,
 	pool_condvar: Condvar,
-	task_queue: Mutex<Option<VecDeque<Box<dyn FnOnce(&mut WorkerCtx) + Send>>>>,
+	pending_task: Mutex<PoolQueueSlot<WorkerCtx>>,
 }
 
 impl<WorkerCtx: Send + 'static> ThreadPool<WorkerCtx> {
@@ -20,71 +49,77 @@ impl<WorkerCtx: Send + 'static> ThreadPool<WorkerCtx> {
 		let inner = Arc::new(ThreadPoolShared {
 			workers_condvar: Default::default(),
 			pool_condvar: Default::default(),
-			task_queue: Mutex::new(Some(VecDeque::with_capacity(worker_ctxs.len()))),
+			pending_task: Mutex::new(PoolQueueSlot::Empty),
 		});
 		let workers = worker_ctxs
 			.into_iter()
-			.map(|mut ctx| {
+			.enumerate()
+			.map(|(i, mut ctx)| {
 				let inner_clone = inner.clone();
-				thread::spawn(move || loop {
-					let ThreadPoolShared {
-						task_queue,
-						workers_condvar,
-						pool_condvar,
-						..
-					} = &*inner_clone;
-					let mut guard = task_queue.lock().unwrap();
-					while guard.as_ref().is_some_and(|x| x.len() == 0) {
-						debug!("[worker] waiting...");
-						guard = workers_condvar.wait(guard).unwrap();
-					}
-					if let Some(ref mut queue) = &mut *guard {
-						debug!("[worker] running task...");
-						let task_fn = queue.pop_front().unwrap();
-						pool_condvar.notify_all();
-						drop(guard);
-						(task_fn)(&mut ctx);
-					} else {
-						debug!("[worker] quitting...");
-						break;
-					}
-				})
+				thread::Builder::new()
+					.name(format!("w({i})"))
+					.spawn(move || loop {
+						let ThreadPoolShared {
+							pending_task,
+							workers_condvar,
+							pool_condvar,
+							..
+						} = &*inner_clone;
+						let mut guard = pending_task.lock().unwrap();
+						while matches!(*guard, PoolQueueSlot::Empty) {
+							debug!("waiting for tasks...");
+							guard = workers_condvar.wait(guard).unwrap();
+						}
+						if let PoolQueueSlot::Todo(task_fn) = guard.take() {
+							pool_condvar.notify_all();
+							drop(guard);
+							debug!("running task...");
+							(task_fn)(&mut ctx);
+						} else {
+							debug!("quitting...");
+							break;
+						}
+					})
+					.expect("thread to be spawned")
 			})
 			.collect_vec();
 
-		Self {
-			inner,
-			num_threads: workers.len(),
-			workers,
-		}
+		Self { inner, workers }
 	}
 
 	pub fn send_blocking<Task: FnOnce(&mut WorkerCtx) + Send + 'static>(&mut self, task: Task) {
-		let mut guard = self.inner.task_queue.lock().unwrap();
-		while guard.as_ref().is_some_and(|x| x.len() >= self.num_threads) {
-			debug!("[send_blocking] waiting...");
+		let mut guard = self.inner.pending_task.lock().unwrap();
+		while matches!(*guard, PoolQueueSlot::Todo(_)) {
+			debug!("waiting for available workers...");
 			guard = self.inner.pool_condvar.wait(guard).unwrap();
 		}
-		if let Some(ref mut queue) = &mut *guard {
-			debug!("[send_blocking] pushing...");
-			queue.push_back(Box::new(task));
+		if matches!(*guard, PoolQueueSlot::Empty) {
+			*guard = PoolQueueSlot::Todo(Box::new(task));
 			self.inner.workers_condvar.notify_one();
+			debug!("added pending task");
 		}
 	}
 
-	pub fn join(self) {
-		let mut guard = self.inner.task_queue.lock().unwrap();
-		while guard.as_ref().is_some_and(|x| x.len() > 0) {
-			debug!("[join] waiting...");
+	pub fn join(&mut self) {
+		let mut guard = self.inner.pending_task.lock().unwrap();
+		while matches!(*guard, PoolQueueSlot::Todo(_)) {
+			debug!("waiting for idle...");
 			guard = self.inner.pool_condvar.wait(guard).unwrap();
 		}
-		debug!("[join] taking...");
-		guard.take();
+		debug!("sending stop request...");
+		*guard = PoolQueueSlot::Done;
 		drop(guard);
 		self.inner.workers_condvar.notify_all();
-		debug!("[join] joining...");
-		for w in self.workers {
+		debug!("joining...");
+		let workers = mem::replace(&mut self.workers, vec![]);
+		for w in workers {
 			w.join().unwrap();
 		}
+	}
+}
+
+impl<WorkerCtx: Send + 'static> Drop for ThreadPool<WorkerCtx> {
+	fn drop(&mut self) {
+		self.join();
 	}
 }

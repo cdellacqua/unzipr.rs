@@ -7,15 +7,15 @@
     {
       "type": "lldb",
       "request": "launch",
-      "name": "Debug executable 'unzip_all'",
+      "name": "Debug executable 'unzipr'",
       "cargo": {
         "args": [
           "build",
-          "--bin=unzip_all",
-          "--package=unzip_all"
+          "--bin=unzipr",
+          "--package=unzipr"
         ],
         "filter": {
-          "name": "unzip_all",
+          "name": "unzipr",
           "kind": "bin"
         }
       },
@@ -25,16 +25,16 @@
     {
       "type": "lldb",
       "request": "launch",
-      "name": "Debug unit tests in executable 'unzip_all'",
+      "name": "Debug unit tests in executable 'unzipr'",
       "cargo": {
         "args": [
           "test",
           "--no-run",
-          "--bin=unzip_all",
-          "--package=unzip_all"
+          "--bin=unzipr",
+          "--package=unzipr"
         ],
         "filter": {
-          "name": "unzip_all",
+          "name": "unzipr",
           "kind": "bin"
         }
       },
