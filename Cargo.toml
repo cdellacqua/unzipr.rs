@@ -3,12 +3,10 @@ name = "unzipr"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 byte-unit = "5.1.6"
 clap = { version = "4.5.20", features = ["derive"] }
-indicatif = { path = "../../Contrib/indicatif.rs" }
+indicatif = { git = "https://github.com/cdellacqua/indicatif.rs.git" }
 itertools = "0.13.0"
 num_cpus = "1.16.0"
 rayon = "1.10.0"

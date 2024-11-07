@@ -535,6 +535,7 @@ dependencies = [
 [[package]]
 name = "indicatif"
 version = "0.17.8"
+source = "git+https://github.com/cdellacqua/indicatif.rs.git#84e7320e8d4d71d74fa5cc48e33d702dab36f017"
 dependencies = [
  "console",
  "instant",
