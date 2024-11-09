@@ -1,6 +1,7 @@
 use byte_unit::Byte;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use itertools::Itertools;
+use sha2::{Digest, Sha256};
 use std::{
 	ffi::OsStr,
 	fs::{self, File, ReadDir},
@@ -30,10 +31,10 @@ fn process_dir<Queue: FnMut(PathBuf)>(
 			}) else {
 				return;
 			};
-			exploration_pb.set_message(format!("exploring nested dir {entry_path:?}"));
+			exploration_pb.set_message(format!("exploring nested dir {entry_path:?}..."));
 			process_dir(nested, exploration_pb, queue_extraction)
 		} else if entry_path.is_file() && entry_path.extension() == Some(OsStr::new("zip")) {
-			exploration_pb.set_message(format!("extracting {entry_path:?}"));
+			exploration_pb.set_message(format!("extracting {entry_path:?}..."));
 			queue_extraction(entry_path);
 			exploration_pb.set_message("");
 		}
@@ -97,7 +98,7 @@ fn extract(opts: &CliArgs, zip_path: PathBuf, extraction_pb: &ProgressBar) {
 			.into_string()
 			.expect("file name to contain a valid utf8 string");
 
-		extraction_pb.set_message(file_name);
+		extraction_pb.set_message(format!("extracting {file_name}..."));
 
 		if file.is_dir() {
 			fs::create_dir_all(&output_path).if_err(|err| {
@@ -129,7 +130,17 @@ fn extract(opts: &CliArgs, zip_path: PathBuf, extraction_pb: &ProgressBar) {
 				continue;
 			};
 
-			extraction_pb.set_length(file.size());
+			let mut sha_zipped = if opts.checksum {
+				Some(Sha256::new())
+			} else {
+				None
+			};
+
+			extraction_pb.set_length(if opts.checksum {
+				file.size() * 2
+			} else {
+				file.size()
+			});
 			loop {
 				let Ok(n) = file.read(&mut buf).inspect_err(|err| {
 					error!(
@@ -143,6 +154,9 @@ fn extract(opts: &CliArgs, zip_path: PathBuf, extraction_pb: &ProgressBar) {
 					break;
 				}
 				extraction_pb.inc(n as u64);
+				if let Some(ref mut sha) = sha_zipped {
+					sha.update(&buf);
+				}
 				output_file.write(&buf).if_err(|err| {
 					error!(
 						?err,
@@ -151,17 +165,73 @@ fn extract(opts: &CliArgs, zip_path: PathBuf, extraction_pb: &ProgressBar) {
 					exit(1);
 				});
 			}
+			output_file.flush().if_err(|err| {
+				error!(
+					?err,
+					"unable to extract zipped file {enclosed_name:?}, archive {zip_path:?}",
+				);
+				exit(1);
+			});
+			drop(output_file);
+
+			let input_hash = sha_zipped.map(Sha256::finalize);
+
+			if let Some(input_hash) = input_hash {
+				extraction_pb.set_message(format!("verifying {file_name}..."));
+				let Ok(mut output_file) = File::open(&output_path).inspect_err(|err| {
+					error!(
+						?err,
+						"unable to open output file {output_path:?}, archive {zip_path:?}",
+					);
+				}) else {
+					continue;
+				};
+				let mut sha_unzipped = Sha256::new();
+				loop {
+					let Ok(n) = output_file.read(&mut buf).inspect_err(|err| {
+						error!(
+							?err,
+							"unable to read unzipped file {output_path:?}, archive {zip_path:?}",
+						);
+					}) else {
+						break;
+					};
+					if n == 0 {
+						break;
+					}
+					extraction_pb.inc(n as u64);
+					sha_unzipped.update(&buf);
+				}
+				let output_hash = sha_unzipped.finalize();
+				if output_hash[..] != input_hash[..] {
+					error!(input_hash = hex::encode(&input_hash[..]), output_hash = hex::encode(&output_hash[..]), "unzipped file {output_path:?} doesn't have the same hash as the input one, archive {zip_path:?}");
+				}
+			}
 		}
 	}
 }
 
-use clap::Parser;
+use clap::{ArgAction, Parser};
 
 #[derive(Parser, Clone, Debug)]
 #[command(version = "1.0.0", about = "unzipr - recursively extract every zip file found in a directory and its subdirectories", long_about = None)]
 #[command(next_line_help = true)]
 struct CliArgs {
 	path: PathBuf,
+	#[arg(
+		short = 't',
+		long,
+		help = "choose the number of threads to spawn to unzip files. By default, one thread per core is spawned to maximize parallelism"
+	)]
+	threads: Option<usize>,
+	#[arg(
+		short = 'c',
+		long,
+		help = "use the SHA256 hashing function as a checksum to verify that extracted files match the original from the archives",
+		default_value_t = true,
+		action = ArgAction::Set
+	)]
+	checksum: bool,
 	#[arg(
 		short = 'f',
 		long,
@@ -219,7 +289,7 @@ fn main() {
 		})
 		.init();
 
-	let cores = num_cpus::get();
+	let cores = opts.threads.unwrap_or_else(num_cpus::get);
 
 	let dir = Path::new(&opts.path);
 	let Ok(dir) = fs::read_dir(dir).inspect_err(|err| {
