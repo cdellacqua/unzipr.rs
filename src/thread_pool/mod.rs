@@ -1,6 +1,5 @@
 use std::{
-	fmt::Debug,
-	mem::{self, replace},
+	fmt, mem,
 	sync::{Arc, Condvar, Mutex},
 	thread::{self, JoinHandle},
 };
@@ -18,8 +17,8 @@ enum PoolQueueSlot<WorkerCtx: Send + 'static> {
 	Empty,
 	Todo(Box<dyn FnOnce(&mut WorkerCtx) + Send>),
 }
-impl<WorkerCtx: Send + 'static> Debug for PoolQueueSlot<WorkerCtx> {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<WorkerCtx: Send + 'static> fmt::Debug for PoolQueueSlot<WorkerCtx> {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
 			Self::Done => write!(f, "Done"),
 			Self::Empty => write!(f, "Empty"),
@@ -31,7 +30,7 @@ impl<WorkerCtx: Send + 'static> Debug for PoolQueueSlot<WorkerCtx> {
 impl<WorkerCtx: Send + 'static> PoolQueueSlot<WorkerCtx> {
 	fn take(&mut self) -> PoolQueueSlot<WorkerCtx> {
 		match self {
-			PoolQueueSlot::Todo(_) => replace(self, PoolQueueSlot::Empty),
+			PoolQueueSlot::Todo(_) => mem::replace(self, PoolQueueSlot::Empty),
 			PoolQueueSlot::Done => PoolQueueSlot::Done,
 			PoolQueueSlot::Empty => PoolQueueSlot::Empty,
 		}
@@ -111,7 +110,7 @@ impl<WorkerCtx: Send + 'static> ThreadPool<WorkerCtx> {
 		drop(guard);
 		self.inner.workers_condvar.notify_all();
 		debug!("joining...");
-		let workers = mem::replace(&mut self.workers, vec![]);
+		let workers = mem::take(&mut self.workers);
 		for w in workers {
 			w.join().unwrap();
 		}

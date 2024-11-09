@@ -15,7 +15,6 @@ use unzipr::{indicatif_ext::IndicatifWriter, rust_ext::ResultExt, thread_pool::T
 use zip::ZipArchive;
 
 fn process_dir<Queue: FnMut(PathBuf)>(
-	opts: &CliArgs,
 	dir: ReadDir,
 	exploration_pb: &ProgressBar,
 	queue_extraction: &mut Queue,
@@ -32,7 +31,7 @@ fn process_dir<Queue: FnMut(PathBuf)>(
 				return;
 			};
 			exploration_pb.set_message(format!("exploring nested dir {entry_path:?}"));
-			process_dir(opts, nested, exploration_pb, queue_extraction)
+			process_dir(nested, exploration_pb, queue_extraction)
 		} else if entry_path.is_file() && entry_path.extension() == Some(OsStr::new("zip")) {
 			exploration_pb.set_message(format!("extracting {entry_path:?}"));
 			queue_extraction(entry_path);
@@ -76,8 +75,8 @@ fn extract(opts: &CliArgs, zip_path: PathBuf, extraction_pb: &ProgressBar) {
 			continue;
 		};
 		let output_path = PathBuf::from_iter([
-			opts.outdir.as_ref().unwrap_or_else(|| &opts.path),
-			&*zip_path_relative_to_initial
+			opts.outdir.as_ref().unwrap_or(&opts.path),
+			zip_path_relative_to_initial
 				.parent()
 				.expect("a valid zip path should always have a parent dir"),
 			&*PathBuf::from_str(if opts.unwrap {
@@ -93,10 +92,10 @@ fn extract(opts: &CliArgs, zip_path: PathBuf, extraction_pb: &ProgressBar) {
 
 		let file_name = output_path
 			.file_name()
-			.unwrap()
+			.expect("output path to contain a file name")
 			.to_os_string()
 			.into_string()
-			.unwrap();
+			.expect("file name to contain a valid utf8 string");
 
 		extraction_pb.set_message(file_name);
 
@@ -132,7 +131,7 @@ fn extract(opts: &CliArgs, zip_path: PathBuf, extraction_pb: &ProgressBar) {
 
 			extraction_pb.set_length(file.size());
 			loop {
-				let Ok(n) = file.read(&mut *buf).inspect_err(|err| {
+				let Ok(n) = file.read(&mut buf).inspect_err(|err| {
 					error!(
 						?err,
 						"unable to read zipped file {enclosed_name:?}, archive {zip_path:?}",
@@ -144,7 +143,7 @@ fn extract(opts: &CliArgs, zip_path: PathBuf, extraction_pb: &ProgressBar) {
 					break;
 				}
 				extraction_pb.inc(n as u64);
-				output_file.write(&*buf).if_err(|err| {
+				output_file.write(&buf).if_err(|err| {
 					error!(
 						?err,
 						"unable to extract zipped file {enclosed_name:?}, archive {zip_path:?}",
@@ -202,7 +201,7 @@ fn main() {
 		ProgressStyle::with_template(
 			"[{bar:40.green/yellow}] {human_pos}/{human_len} {spinner} {wide_msg}",
 		)
-		.unwrap()
+		.expect("a valid progress template template")
 		.progress_chars("=>-"),
 	);
 
@@ -221,7 +220,6 @@ fn main() {
 		.init();
 
 	let cores = num_cpus::get();
-	// let cores = 1;
 
 	let dir = Path::new(&opts.path);
 	let Ok(dir) = fs::read_dir(dir).inspect_err(|err| {
@@ -232,7 +230,7 @@ fn main() {
 
 	debug!("extracting zip files found in {dir:?}...");
 
-	let workers_progress_bars = (0..cores).into_iter().map(|i| {
+	let workers_progress_bars = (0..cores).map(|i| {
 		let pb = multi_pb.add(ProgressBar::empty()
 			.with_style(
 				ProgressStyle::with_template(&format!("{} [{{bar:40.green/yellow}}] {{bytes}}/{{total_bytes}} {{bytes_per_sec}} {{spinner}} {{wide_msg}}", match i {
@@ -241,7 +239,7 @@ fn main() {
 					n if n < cores - 1 => '├',
 					_ => '└',
 				}))
-					.unwrap()
+					.expect("a valid progress bar template")
 					.progress_chars("=>-")
 			));
 			pb.set_message("idle");
@@ -251,13 +249,13 @@ fn main() {
 	let mut pool = ThreadPool::new(
 		workers_progress_bars
 			.iter()
-			.map(|pb| ((opts.clone(), pb.clone())))
+			.map(|pb| (opts.clone(), pb.clone()))
 			.collect_vec(),
 	);
 
-	process_dir(&opts, dir, &exploration_pb, &mut |path| {
+	process_dir(dir, &exploration_pb, &mut |path| {
 		pool.send_blocking(|(opts, extraction_pb)| {
-			extract(&opts, path, extraction_pb);
+			extract(opts, path, extraction_pb);
 			extraction_pb.reset();
 			extraction_pb.unset_length();
 			extraction_pb.set_message("idle");
@@ -265,7 +263,9 @@ fn main() {
 	});
 
 	pool.join();
-	multi_pb.clear().unwrap();
+	multi_pb
+		.clear()
+		.if_err(|err| warn!(?err, "unable to clear multi progress bar"));
 
 	debug!("extraction completed");
 }
