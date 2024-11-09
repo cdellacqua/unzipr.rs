@@ -1,5 +1,5 @@
 use byte_unit::Byte;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use itertools::Itertools;
 use sha2::{Digest, Sha256};
 use std::{
@@ -218,6 +218,8 @@ use clap::{ArgAction, Parser};
 #[command(next_line_help = true)]
 struct CliArgs {
 	path: PathBuf,
+	#[arg(short = 'q', long, help = "hide progress bars")]
+	quiet: bool,
 	#[arg(
 		short = 't',
 		long,
@@ -265,15 +267,18 @@ fn main() {
 	let opts = CliArgs::parse();
 
 	let multi_pb = MultiProgress::new();
-	let exploration_pb = multi_pb.add(ProgressBar::empty());
-	exploration_pb.enable_steady_tick(Duration::from_millis(100));
-	exploration_pb.set_style(
+	let exploration_pb = multi_pb.add(ProgressBar::empty()).with_style(
 		ProgressStyle::with_template(
 			"[{bar:40.green/yellow}] {human_pos}/{human_len} {spinner} {wide_msg}",
 		)
 		.expect("a valid progress template template")
 		.progress_chars("=>-"),
 	);
+	exploration_pb.enable_steady_tick(Duration::from_millis(100));
+
+	if opts.quiet {
+		exploration_pb.set_draw_target(ProgressDrawTarget::hidden());
+	}
 
 	tracing_subscriber::fmt()
 		.without_time()
@@ -312,6 +317,9 @@ fn main() {
 					.expect("a valid progress bar template")
 					.progress_chars("=>-")
 			));
+			if opts.quiet {
+				pb.set_draw_target(ProgressDrawTarget::hidden());
+			}
 			pb.set_message("idle");
 			pb
 	}).collect_vec();
