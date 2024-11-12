@@ -79,7 +79,7 @@ pub fn extract(
 			continue;
 		};
 		let output_path = PathBuf::from_iter([
-			&outdir,
+			outdir,
 			zip_path_relative_to_initial
 				.parent()
 				.expect("a valid zip path should always have a parent dir"),
