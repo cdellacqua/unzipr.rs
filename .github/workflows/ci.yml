@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  workflow_dispatch:
+#  push:
+#    tags: ["[0-9]+.[0-9]+.[0-9]+*"]
+#    branches: [ "main" ]
+#  pull_request:
+#    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+    - name: Cache cargo packages
+      env:
+        cache-name: cache-cargo-packages
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo
+          target/
+        key: ${{runner.os}}-${{env.cache-name}}-${{hashFiles('**/Cargo.lock')}}
+    - name: Lint
+      run: cargo lint
+    - name: Format
+      run: cargo format
+    - name: Tests
+      run: cargo test --verbose
+  build:
+    needs: verify
+    strategy:
+      matrix:
+        target:
+        - aarch64-apple-darwin
+        - x86_64-apple-darwin
+        #- x86_64-pc-windows-msvc
+        #- aarch64-pc-windows-msvc
+        #- x86_64-unknown-linux-gnu
+        #- x86_64-unknown-linux-musl
+        #- aarch64-unknown-linux-gnu
+        #- aarch64-unknown-linux-musl
+        #- armv7-unknown-linux-gnueabihf
+        #- armv7-unknown-linux-musleabihf
+        #- riscv64gc-unknown-linux-gnu
+        #- loongarch64-unknown-linux-gnu
+        include:
+        - target: aarch64-apple-darwin
+          os: macos-latest
+        - target: x86_64-apple-darwin
+          os: macos-latest
+        #- target: x86_64-pc-windows-msvc
+        #  os: windows-latest
+        #- target: x86_64-pc-windows-msvc
+        #  extra: msi
+        #  os: windows-latest
+        #- target: aarch64-pc-windows-msvc
+        #  os: windows-latest
+        #- target: aarch64-pc-windows-msvc
+        #  extra: msi
+        #  os: windows-latest
+        #- target: x86_64-unknown-linux-gnu
+        #  os: ubuntu-22.04
+        #- target: x86_64-unknown-linux-musl
+        #  os: ubuntu-22.04
+        #- target: aarch64-unknown-linux-gnu
+        #  os: ubuntu-22.04
+        #- target: aarch64-unknown-linux-musl
+        #  os: ubuntu-22.04
+        #- target: armv7-unknown-linux-gnueabihf
+        #  os: ubuntu-22.04
+        #- target: armv7-unknown-linux-musleabihf
+        #  os: ubuntu-22.04
+        #- target: riscv64gc-unknown-linux-gnu
+        #  os: ubuntu-latest
+        #- target: loongarch64-unknown-linux-gnu
+        #  os: ubuntu-22.04
+    runs-on: ${{matrix.os}}
+    steps:
+    - uses: actions/checkout@v4
+    - name: Cache cargo packages
+      env:
+        cache-name: cache-cargo-packages
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo
+          target/
+        key: ${{matrix.os}}-${{matrix.target}}-${{env.cache-name}}-${{hashFiles('**/Cargo.lock')}}
+    - name: Build
+      run: cargo build --release --verbose
+    - name: Archive production artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: target-${{matrix.target}}
+        path: |
+          target/release/unzipr
+          target/release/unzipr.exe
+        retention-days: 1
+  upload:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Merge artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: targets
+        pattern: target-*
+    - name: Archive production artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: targets
+        path: "*"
+        retention-days: 5

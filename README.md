@@ -2,7 +2,7 @@
 
 <!-- [![Documentation](https://docs.rs/unzipr/badge.svg)](https://docs.rs/unzipr/) -->
 <!-- [![Crates.io](https://img.shields.io/crates/v/unzipr.svg)](https://crates.io/crates/unzipr) -->
-[![Build status](https://github.com/cdellacqua/unzipr.rs/workflows/CI/badge.svg)](https://github.com/cdellacqua/unzipr.rs/actions/workflows/rust.yml)
+[![Build status](https://github.com/cdellacqua/unzipr.rs/workflows/CI/badge.svg)](https://github.com/cdellacqua/unzipr.rs/actions/workflows/ci.yml)
 
 A command line utility that recursively unzip files in a directory.
 
@@ -14,6 +14,7 @@ Features:
 - [x] overwrite protection
 - [x] cool progress visualization (thanks to [crates/indicatif](https://crates.io/crates/indicatif))
 - [x] checksum validation of the extracted files
+- [ ] encrypted archives
 
 ## Usage
 
