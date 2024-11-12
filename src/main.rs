@@ -45,7 +45,7 @@ fn process_dir<Queue: FnMut(PathBuf)>(
 use clap::Parser;
 
 #[derive(Parser, Clone, Debug)]
-#[command(version = "1.0.0", about = "unzipr - recursively extract every zip file found in a directory and its subdirectories", long_about = None)]
+#[command(version = env!("CARGO_PKG_VERSION"), about = "unzipr - recursively extract every zip file found in a directory and its subdirectories", long_about = None)]
 #[command(next_line_help = true)]
 struct CliArgs {
 	path: PathBuf,
