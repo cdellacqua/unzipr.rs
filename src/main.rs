@@ -3,7 +3,8 @@ use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use itertools::Itertools;
 use std::{
 	ffi::OsStr,
-	fs::{self, ReadDir},
+	fs::{self, read_to_string, ReadDir},
+	mem,
 	path::{Path, PathBuf},
 	process::exit,
 	time::Duration,
@@ -42,7 +43,7 @@ fn process_dir<Queue: FnMut(PathBuf)>(
 	}
 }
 
-use clap::Parser;
+use clap::{ArgAction, Parser};
 
 #[derive(Parser, Clone, Debug)]
 #[command(version = env!("CARGO_PKG_VERSION"), about = "unzipr - recursively extract every zip file found in a directory and its subdirectories", long_about = None)]
@@ -81,7 +82,7 @@ struct CliArgs {
 		help = "put the content of the archive in the same directory as the zip archive it came from, rather than in a directory with the name of the source archive"
 	)]
 	unwrap: bool,
-	#[arg(short = 'v', long, action = clap::ArgAction::Count, help = "select the log level by passing this flag multiple times. The min log level is 0 (no flag), max is 3 (-vvv)")]
+	#[arg(short = 'v', long, action = clap::ArgAction::Count, help = "select the log level by passing this flag multiple times. The min log level is 0 (no flag), max is 4 (-vvvv)")]
 	verbose: u8,
 	#[arg(
 		short = 'b',
@@ -90,10 +91,24 @@ struct CliArgs {
 		default_value = "8KiB"
 	)]
 	block_size: Byte,
+	#[arg(
+		short = 'p',
+		long = "password",
+		help = "each password that should be tried when dealing with encrypted archive",
+		action = ArgAction::Append
+	)]
+	passwords: Vec<String>,
+	#[arg(
+		short = 'P',
+		long = "password-file",
+		help = "the path to a file that contains each password that should be tried when dealing with encrypted archive",
+		action = ArgAction::Append
+	)]
+	passwords_path: Option<PathBuf>,
 }
 
 fn main() {
-	let opts = CliArgs::parse();
+	let mut opts = CliArgs::parse();
 
 	let multi_pb = MultiProgress::new();
 	let exploration_pb = multi_pb.add(ProgressBar::no_length()).with_style(
@@ -122,6 +137,23 @@ fn main() {
 			_ => Level::TRACE,
 		})
 		.init();
+
+	let mut all_passwords = mem::take(&mut opts.passwords);
+	if let Some(ref passwords_path) = opts.passwords_path {
+		match read_to_string(passwords_path) {
+			Ok(str) => {
+				let lines = str.lines().map(|str| str.to_owned());
+				all_passwords.extend(lines);
+			}
+			Err(err) => {
+				error!(
+					?err,
+					"unable to read passwords from file {passwords_path:?}"
+				);
+				exit(2);
+			}
+		}
+	}
 
 	let cores = opts.threads.unwrap_or_else(num_cpus::get);
 
@@ -156,12 +188,12 @@ fn main() {
 	let mut pool = ThreadPool::new(
 		workers_progress_bars
 			.iter()
-			.map(|pb| (opts.clone(), pb.clone()))
+			.map(|pb| (all_passwords.clone(), opts.clone(), pb.clone()))
 			.collect_vec(),
 	);
 
 	process_dir(dir, &exploration_pb, &mut |path| {
-		pool.send_blocking(move |(opts, extraction_pb)| {
+		pool.send_blocking(move |(all_passwords, opts, extraction_pb)| {
 			let result = extract(ExtractOpts {
 				verify_checksum: !opts.skip_checksum,
 				zip_root: &opts.path,
@@ -171,6 +203,7 @@ fn main() {
 				extraction_pb: Some(extraction_pb),
 				unwrap: opts.unwrap,
 				overwrite: opts.overwrite,
+				passwords: all_passwords,
 			});
 			if let Err(ExtractionError::WriteFailed) = result {
 				error!("unrecoverable error");

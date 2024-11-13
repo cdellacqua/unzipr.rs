@@ -10,11 +10,11 @@ Features:
 
 - [x] supports zip files (thanks to [crates/zip](https://crates.io/crates/zip))
 - [x] multithreading
-- [x] same name protection (by creating a directory for each extracted archive)
+- [x] same-name protection (by creating a directory for each extracted archive)
 - [x] overwrite protection
 - [x] cool progress visualization (thanks to [crates/indicatif](https://crates.io/crates/indicatif))
 - [x] checksum validation of the extracted files
-- [ ] encrypted archives
+- [x] encrypted archives
 
 ## Usage
 
@@ -35,6 +35,13 @@ Do not put the extracted content in a dedicated folder:
 ```sh
 unzipr path/to/directory/containing/zips --unwrap
 ```
+
+Use a password list from a text file:
+
+```sh
+unzipr path/to/directory/containing/zips --password-file path/to/passwords.txt
+```
+Note: the format of the password file is a plain text file where each line corresponds to a password.
 
 ...and many more! Check out the help command for more options.
 

@@ -2,14 +2,13 @@ use std::{
 	fs::{self, File},
 	io::{Read, Write},
 	path::{Path, PathBuf},
-	process::exit,
 	str::FromStr,
 };
 
 use indicatif::ProgressBar;
 use sha2::{Digest, Sha256};
-use tracing::{error, warn};
-use zip::ZipArchive;
+use tracing::{error, trace, warn};
+use zip::{result::ZipError, ZipArchive};
 
 use crate::rust_ext::ResultExt;
 
@@ -34,6 +33,7 @@ pub struct ExtractOpts<'a> {
 	pub extraction_pb: Option<&'a ProgressBar>,
 	pub unwrap: bool,
 	pub overwrite: bool,
+	pub passwords: &'a Vec<String>,
 }
 
 pub fn extract(
@@ -46,8 +46,11 @@ pub fn extract(
 		extraction_pb,
 		unwrap,
 		overwrite,
+		passwords,
 	}: ExtractOpts,
 ) -> Result<(), ExtractionError> {
+	let mut partial = false;
+
 	let mut buf = vec![0u8; block_size];
 
 	let file = File::open(zip_path).map_err(|err| {
@@ -64,18 +67,61 @@ pub fn extract(
 		PathBuf::from_iter(zip_path.components().skip(zip_root.components().count()));
 
 	for i in 0..zip.len() {
-		let Ok(mut file) = zip.by_index(i).inspect_err(|err| {
-			error!(
+		let mut file = None;
+
+		// workaround for the borrow checker, surely there is a cleaner way
+		let mut is_unencrypted = false;
+		// workaround for the borrow checker, surely there is a cleaner way
+		let mut should_try_passwords = false;
+		match zip.by_index(i) {
+			Ok(_) => is_unencrypted = true,
+			Err(ZipError::UnsupportedArchive(str)) if str == ZipError::PASSWORD_REQUIRED => {
+				should_try_passwords = true;
+			}
+			Err(err) => error!(
 				?err,
 				"unable to read file with index {i} in zip archive {zip_path:?}",
-			);
-		}) else {
+			),
+		}
+
+		if is_unencrypted {
+			file = Some(zip.by_index(i).unwrap());
+		} else if should_try_passwords {
+			if passwords.is_empty() {
+				error!("no password supplied to decrypt file at index {i}, archive {zip_path:?}");
+				partial = true;
+				continue;
+			};
+			// workaround for the borrow checker, surely there is a cleaner way
+			let mut matching_password = None;
+			for candidate in passwords {
+				trace!("trying password...");
+				let candidate_bytes = candidate.as_bytes();
+				if zip.by_index_decrypt(i, candidate_bytes).is_ok() {
+					trace!("found matching password");
+					matching_password = Some(candidate_bytes);
+					break;
+				}
+				trace!("password didn't match");
+			}
+			let Some(password) = matching_password else {
+				error!("none of the supplied passwords can decrypt file at index {i}, archive {zip_path:?}");
+				partial = true;
+				continue;
+			};
+			file = Some(zip.by_index_decrypt(i, password).unwrap());
+		}
+
+		let Some(mut file) = file else {
+			error!("unable to open file at index {i}, archive {zip_path:?}");
+			partial = true;
 			continue;
 		};
 
 		let Some(enclosed_name) = file.enclosed_name() else {
 			let mangled_name = file.mangled_name();
 			error!("unable to read a proper enclosed path for file {mangled_name:?}, archive {zip_path:?}");
+			partial = true;
 			continue;
 		};
 		let output_path = PathBuf::from_iter([
@@ -113,6 +159,7 @@ pub fn extract(
 					?err,
 					"unable to create empty dir {output_path:?}, archive {zip_path:?}",
 				);
+				partial = true;
 			});
 		} else {
 			if output_path.exists() && !overwrite {
@@ -125,6 +172,7 @@ pub fn extract(
 					fs::create_dir_all(p).if_err(|_| {
 						error!("unable to create dir {p:?}, archive {zip_path:?}");
 					});
+					partial = true;
 				}
 			}
 
@@ -134,6 +182,7 @@ pub fn extract(
 					"unable to create file {output_path:?}, archive {zip_path:?}",
 				);
 			}) else {
+				partial = true;
 				continue;
 			};
 
@@ -153,6 +202,7 @@ pub fn extract(
 						?err,
 						"unable to read zipped file {enclosed_name:?}, archive {zip_path:?}",
 					);
+					partial = true;
 				}) else {
 					break;
 				};
@@ -175,13 +225,13 @@ pub fn extract(
 					ExtractionError::WriteFailed
 				})?;
 			}
-			output_file.flush().if_err(|err| {
+			output_file.flush().map_err(|err| {
 				error!(
 					?err,
 					"unable to extract zipped file {enclosed_name:?}, archive {zip_path:?}",
 				);
-				exit(1);
-			});
+				ExtractionError::WriteFailed
+			})?;
 			drop(output_file);
 			let input_hash = sha_zipped.map(Sha256::finalize);
 
@@ -196,6 +246,7 @@ pub fn extract(
 						"unable to open output file {output_path:?}, archive {zip_path:?}",
 					);
 				}) else {
+					partial = true;
 					continue;
 				};
 				let mut sha_unzipped = Sha256::new();
@@ -206,6 +257,7 @@ pub fn extract(
 							"unable to read unzipped file {output_path:?}, archive {zip_path:?}",
 						);
 					}) else {
+						partial = true;
 						break;
 					};
 					if n == 0 {
@@ -219,9 +271,15 @@ pub fn extract(
 				let output_hash = sha_unzipped.finalize();
 				if output_hash[..] != input_hash[..] {
 					error!(input_hash = hex::encode(&input_hash[..]), output_hash = hex::encode(&output_hash[..]), "unzipped file {output_path:?} doesn't have the same hash as the input one, archive {zip_path:?}");
+					partial = true;
 				}
 			}
 		}
 	}
-	Ok(())
+
+	if partial {
+		Err(ExtractionError::Partial)
+	} else {
+		Ok(())
+	}
 }

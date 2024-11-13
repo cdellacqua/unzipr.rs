@@ -1,4 +1,4 @@
-use std::{env, fs::File, io::Read, os::unix::fs::MetadataExt};
+use std::{env, fs::File, io::Read};
 
 use tempfile::tempdir;
 use unzipr::compression::{extract, ExtractOpts};
@@ -19,6 +19,7 @@ fn smoke_test() {
 		extraction_pb: None,
 		unwrap: true,
 		overwrite: false,
+		passwords: &vec![],
 	})
 	.unwrap();
 }
@@ -39,11 +40,12 @@ fn verify_extracted_size() {
 		extraction_pb: None,
 		unwrap: true,
 		overwrite: false,
+		passwords: &vec![],
 	})
 	.unwrap();
 
 	assert_eq!(
-		dir.path().join("demo.txt").metadata().unwrap().size(),
+		dir.path().join("demo.txt").metadata().unwrap().len(),
 		20,
 		"extracted file exists"
 	);
@@ -64,6 +66,7 @@ fn verify_extracted_content() {
 		extraction_pb: None,
 		unwrap: true,
 		overwrite: false,
+		passwords: &vec![],
 	})
 	.unwrap();
 
