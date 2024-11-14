@@ -1,6 +1,7 @@
 use byte_unit::Byte;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use itertools::Itertools;
+use lending_thread_pool::ThreadPool;
 use std::{
 	ffi::OsStr,
 	fs::{self, read_to_string, ReadDir},
@@ -14,7 +15,6 @@ use unzipr::{
 	compression::{extract, ExtractOpts, ExtractionError},
 	indicatif_ext::IndicatifWriter,
 	rust_ext::ResultExt,
-	thread_pool::ThreadPool,
 };
 
 fn process_dir<Queue: FnMut(PathBuf)>(
@@ -23,7 +23,7 @@ fn process_dir<Queue: FnMut(PathBuf)>(
 	queue_extraction: &mut Queue,
 ) {
 	let entries = dir.into_iter().filter_map(|entry| entry.ok()).collect_vec();
-	exploration_pb.inc_length(entries.len() as u64);
+	exploration_pb.set_length(exploration_pb.length().unwrap_or(0) + entries.len() as u64);
 	for entry in entries {
 		let entry_path = entry.path();
 		exploration_pb.inc(1);
@@ -193,7 +193,7 @@ fn main() {
 	);
 
 	process_dir(dir, &exploration_pb, &mut |path| {
-		pool.send_blocking(move |(all_passwords, opts, extraction_pb)| {
+		pool.enqueue(move |(all_passwords, opts, extraction_pb)| {
 			let result = extract(ExtractOpts {
 				verify_checksum: !opts.skip_checksum,
 				zip_root: &opts.path,
@@ -215,6 +215,7 @@ fn main() {
 		});
 	});
 
+	exploration_pb.set_message("waiting for workers to finish...");
 	pool.join();
 	multi_pb
 		.clear()
