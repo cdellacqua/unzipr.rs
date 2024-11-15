@@ -8,7 +8,7 @@ fn verify_extracted_content() {
 	tracing_subscriber::fmt::init();
 	let dir = tempdir().unwrap();
 
-	extract(ExtractOpts {
+	extract(&ExtractOpts {
 		verify_checksum: false,
 		zip_root: &env::current_dir().unwrap().join("tests"),
 		outdir: dir.path(),

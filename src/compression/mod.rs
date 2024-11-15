@@ -36,8 +36,18 @@ pub struct ExtractOpts<'a> {
 	pub passwords: &'a Vec<String>,
 }
 
-pub fn extract(
-	ExtractOpts {
+/// Extract a zip archive.
+///
+/// # Errors
+/// - [`ExtractionError::Partial`] if some files could not be extracted
+/// - [`ExtractionError::WriteFailed`] if write or flush operations fail
+/// - other [`ExtractionError`] related to zip handling
+///
+/// # Panics
+/// - if a zip operation such as opening or fetching a file name fails
+#[allow(clippy::too_many_lines)]
+pub fn extract(extract_opts: &ExtractOpts) -> Result<(), ExtractionError> {
+	let ExtractOpts {
 		verify_checksum,
 		zip_root,
 		outdir,
@@ -47,8 +57,8 @@ pub fn extract(
 		unwrap,
 		overwrite,
 		passwords,
-	}: ExtractOpts,
-) -> Result<(), ExtractionError> {
+	} = *extract_opts;
+
 	let mut partial = false;
 
 	let mut buf = vec![0u8; block_size];
@@ -63,8 +73,10 @@ pub fn extract(
 		ExtractionError::Incompatible
 	})?;
 
-	let zip_path_relative_to_initial =
-		PathBuf::from_iter(zip_path.components().skip(zip_root.components().count()));
+	let zip_path_relative_to_initial = zip_path
+		.components()
+		.skip(zip_root.components().count())
+		.collect::<PathBuf>();
 
 	for i in 0..zip.len() {
 		let mut file = None;

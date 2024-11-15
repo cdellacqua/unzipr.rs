@@ -22,7 +22,7 @@ fn process_dir<Queue: FnMut(PathBuf)>(
 	exploration_pb: &ProgressBar,
 	queue_extraction: &mut Queue,
 ) {
-	let entries = dir.into_iter().filter_map(|entry| entry.ok()).collect_vec();
+	let entries = dir.into_iter().filter_map(Result::ok).collect_vec();
 	exploration_pb.set_length(exploration_pb.length().unwrap_or(0) + entries.len() as u64);
 	for entry in entries {
 		let entry_path = entry.path();
@@ -34,7 +34,7 @@ fn process_dir<Queue: FnMut(PathBuf)>(
 				return;
 			};
 			exploration_pb.set_message(format!("exploring nested dir {entry_path:?}..."));
-			process_dir(nested, exploration_pb, queue_extraction)
+			process_dir(nested, exploration_pb, queue_extraction);
 		} else if entry_path.is_file() && entry_path.extension() == Some(OsStr::new("zip")) {
 			exploration_pb.set_message(format!("extracting {entry_path:?}..."));
 			queue_extraction(entry_path);
@@ -48,6 +48,7 @@ use clap::{ArgAction, Parser};
 #[derive(Parser, Clone, Debug)]
 #[command(version = env!("CARGO_PKG_VERSION"), about = "unzipr - recursively extract every zip file found in a directory and its subdirectories", long_about = None)]
 #[command(next_line_help = true)]
+#[allow(clippy::struct_excessive_bools)]
 struct CliArgs {
 	path: PathBuf,
 	#[arg(short = 'q', long, help = "hide progress bars")]
@@ -107,6 +108,7 @@ struct CliArgs {
 	passwords_path: Option<PathBuf>,
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() {
 	let mut opts = CliArgs::parse();
 
@@ -142,7 +144,7 @@ fn main() {
 	if let Some(ref passwords_path) = opts.passwords_path {
 		match read_to_string(passwords_path) {
 			Ok(str) => {
-				let lines = str.lines().map(|str| str.to_owned());
+				let lines = str.lines().map(ToOwned::to_owned);
 				all_passwords.extend(lines);
 			}
 			Err(err) => {
@@ -160,6 +162,16 @@ fn main() {
 	let dir = Path::new(&opts.path);
 	let Ok(dir) = fs::read_dir(dir).inspect_err(|err| {
 		error!(?err, "unable to scan dir {:?}", dir);
+	}) else {
+		return;
+	};
+
+	let Ok(block_size) = usize::try_from(opts.block_size).inspect_err(|err| {
+		error!(
+			?err,
+			"block size doesn't fit usize, which is {} bits on this machine",
+			usize::BITS
+		);
 	}) else {
 		return;
 	};
@@ -194,12 +206,12 @@ fn main() {
 
 	process_dir(dir, &exploration_pb, &mut |path| {
 		pool.enqueue(move |(all_passwords, opts, extraction_pb)| {
-			let result = extract(ExtractOpts {
+			let result = extract(&ExtractOpts {
 				verify_checksum: !opts.skip_checksum,
 				zip_root: &opts.path,
 				outdir: opts.outdir.as_ref().unwrap_or(&opts.path),
 				zip_path: &path,
-				block_size: opts.block_size.as_u64() as usize,
+				block_size,
 				extraction_pb: Some(extraction_pb),
 				unwrap: opts.unwrap,
 				overwrite: opts.overwrite,

@@ -7,7 +7,7 @@ use unzipr::compression::{extract, ExtractOpts};
 fn smoke_test() {
 	let dir = tempdir().unwrap();
 
-	extract(ExtractOpts {
+	extract(&ExtractOpts {
 		verify_checksum: false,
 		zip_root: &env::current_dir().unwrap().join("tests"),
 		outdir: dir.path(),
@@ -28,7 +28,7 @@ fn smoke_test() {
 fn verify_extracted_size() {
 	let dir = tempdir().unwrap();
 
-	extract(ExtractOpts {
+	extract(&ExtractOpts {
 		verify_checksum: false,
 		zip_root: &env::current_dir().unwrap().join("tests"),
 		outdir: dir.path(),
@@ -54,7 +54,7 @@ fn verify_extracted_size() {
 fn verify_extracted_content() {
 	let dir = tempdir().unwrap();
 
-	extract(ExtractOpts {
+	extract(&ExtractOpts {
 		verify_checksum: false,
 		zip_root: &env::current_dir().unwrap().join("tests"),
 		outdir: dir.path(),
